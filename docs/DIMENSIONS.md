@@ -22,7 +22,7 @@ Esta é a API completa que permite buscas complexas usando a linguagem DSL (Dime
 
 ## Recursos para Testar o Dimensions AI
 
-- Dimensions AI: <https://app.dimensions.ai/discover/publication>
+- Dimensions AI Dashboard: <https://app.dimensions.ai/discover/publication>
 - Testar API do Dimensions
   - <https://www.dimensions.ai/resources/api-documentation/>
   - <https://docs.dimensions.ai/dsl/api.html>
