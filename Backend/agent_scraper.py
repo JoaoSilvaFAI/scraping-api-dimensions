@@ -3,134 +3,116 @@ import sys
 import asyncio
 import json
 import logging
+import re
+from pathlib import Path
 from dotenv import load_dotenv
 
-# Configurar loop de eventos no Windows
+# Configurar loop de eventos e codificação no Windows
 if sys.platform == 'win32':
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
 load_dotenv()
 
-logging.basicConfig(level=logging.WARNING)  # Reduz verbosidade no terminal
+# Log para ver as ações do agente
+logging.basicConfig(level=logging.INFO) 
 
-# Usa o ChatOpenAI do LangChain (já instalado no venv)
 from langchain_openai import ChatOpenAI
-from pydantic import Field
+from pydantic import ConfigDict
 from browser_use import Agent, Browser, BrowserProfile
 
-
-# O browser-use v0.11.4 exige 'provider' e também faz setattr('ainvoke') no llm.
-# extra='allow' permite que o Pydantic aceite qualquer atributo extra dinamicamente.
-from pydantic import Field, ConfigDict
-
 class ChatOpenAIWithProvider(ChatOpenAI):
-    model_config = ConfigDict(arbitrary_types_allowed=True, extra='allow')
-    provider: str = Field(default="openai")
-
+    model_config = ConfigDict(extra='allow')
+    provider: str = "openai"
+    model: str = "gpt-4o"
 
 async def search_dimensions(query: str) -> list[dict]:
     email = os.getenv("DIMENSIONS_EMAIL")
     password = os.getenv("DIMENSIONS_PASSWORD")
 
+    # Hack necessário para browser-use 0.12.6 reconhecer o provider
     llm = ChatOpenAIWithProvider(
         model="gpt-4o",
         api_key=os.getenv("OPENAI_API_KEY"),
         temperature=0,
     )
 
+    # Configuração do Browser
     browser = Browser(
-        browser_profile=BrowserProfile(
-            headless=False,
-        )
+        headless=False,
+        disable_security=True,
+        highlight_elements=True,
+        keep_alive=True
     )
 
     task = f"""
-    Você é um assistente que vai navegar no site Dimensions.ai para buscar publicações científicas.
-
-    PASSO 1 - NAVEGAÇÃO:
-    - Acesse https://app.dimensions.ai/discover/publication
-    - AGUARDE completamente o carregamento da página (pode levar até 20 segundos).
-
-    PASSO 2 - LOGIN:
-    - Procure e clique no botão "Sign in" ou "Login" ou "Entrar" que aparecer na página.
-    - Se aparecer um campo de Email, digite: {email}
-    - Clique em "Continue" ou "Next" ou "Próximo" após digitar o email.
-    - Se aparecer um campo de Password/Senha, digite: {password}
-    - Clique em "Sign in" ou "Log in" ou "Entrar" para confirmar.
-    - AGUARDE o login completar e a página de pesquisa carregar.
-
-    PASSO 3 - BUSCA:
-    - Após estar logado, encontre a barra de pesquisa principal no topo da página.
-    - Clique na barra de pesquisa.
-    - Digite: {query}
-    - Pressione Enter ou clique no botão de busca.
-    - AGUARDE os resultados carregarem.
-
-    PASSO 4 - EXTRAÇÃO:
-    - Colete os dados dos 10 primeiros resultados visíveis.
-    - Para cada resultado, extraia: Título, Autores, Ano e Fonte/Revista.
-
-    PASSO 5 - RESULTADO:
-    - Retorne APENAS um JSON válido, sem nenhum texto adicional:
-    [{{"title": "...", "authors": "...", "year": "...", "source": "..."}}]
+    Objetivo: Extrair publicações de Dimensions.ai sobre '{query}'.
+    
+    FLUXO OBRIGATÓRIO:
+    1. Vá para: https://app.dimensions.ai/discover/publication
+    2. LOGIN: Procure o botão 'Sign in'. 
+       Use Email: {email}
+       Use Senha: {password}
+    3. PESQUISA: Busque por '{query}'.
+    4. EXTRAÇÃO: Pegue Título, Autores e Resumo (se disponível) dos 5 primeiros resultados.
+    5. FINALIZAÇÃO: Retorne os dados em formato JSON estruturado: {{"results": [{{"title": "...", "authors": "...", "snippet": "..."}}]}}
     """
 
-    print(f"\n🤖 Agente iniciando busca por: '{query}'")
-    print("📂 Abrindo navegador... (aguarde, o site é lento)\n")
+    print(f"\n🚀 Agente [v3.5] iniciando busca por: '{query}'")
 
     agent = Agent(
         task=task,
         llm=llm,
-        browser=browser,
-        max_failures=20,
-        max_actions_per_step=10,
+        browser=browser
     )
 
-    result = await agent.run()
+    history = await agent.run(max_steps=25)
 
     try:
-        result_text = result.final_result()
-        if not result_text:
-            return []
+        final_text = history.final_result()
+        print(f"📄 Resultado Bruto: {final_text}")
+        
+        # Tenta capturar JSON
+        json_pattern = r'\{.*\}'
+        match = re.search(json_pattern, final_text, re.DOTALL)
+        if match:
+            data = json.loads(match.group())
+            results = data.get("results", [data])
+            if isinstance(results, dict) and "results" not in results:
+                results = [results]
+            
+            # Salva os resultados para uso posterior
+            with open("scraped_data.json", "w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2, ensure_ascii=False)
+            
+            return results
+        
+        return [{"info": final_text}] if final_text else []
 
-        result_text = result_text.strip()
-        if "```json" in result_text:
-            result_text = result_text.split("```json")[1].split("```")[0]
-        elif "```" in result_text:
-            result_text = result_text.split("```")[1].split("```")[0]
-
-        return json.loads(result_text)
     except Exception as e:
-        print(f"⚠️  Erro ao processar resultado: {e}")
+        print(f"⚠️  Erro no processamento: {e}")
         return []
-
 
 async def main_cli():
     print("\n" + "="*45)
-    print(" 🔬 Dimensions AI Scraper - v3")
+    print(" 🔬 Dimensions AI Scraper - v3.5 (0.12.6)")
     print("="*45 + "\n")
 
     while True:
         try:
             query = input("🔍 Termo de busca (ou 'sair'): ").strip()
-        except EOFError:
-            break
+        except EOFError: break
 
-        if query.lower() in ['sair', 'exit', 'q', '']:
-            print("👋 Encerrando.")
-            break
+        if query.lower() in ['sair', 'exit', 'q', '']: break
 
         results = await search_dimensions(query)
 
         if results:
-            print(f"\n✅ {len(results)} resultado(s) para '{query}':\n")
-            for i, pub in enumerate(results, 1):
-                print(f"  {i}. {pub.get('title', 'N/A')}")
-                print(f"     👥 {pub.get('authors', 'N/A')} | 📅 {pub.get('year', 'N/A')} | 📰 {pub.get('source', 'N/A')}")
-            print()
+            print(f"\n✅ Resultados salvos em 'scraped_data.json'")
+            print(json.dumps(results[:2], indent=2, ensure_ascii=False))
         else:
-            print("\n❌ Nenhum resultado encontrado.\n")
-
+            print("\n❌ Sem resultados.")
 
 if __name__ == "__main__":
     asyncio.run(main_cli())

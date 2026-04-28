@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+build/
+dist/
+*.egg-info/
+
+# Environment variables
+.env
+
+# uv / Cache
+.uv/
+uv_cache/
+tmp/
+.python-version
+
+# Browser-use / Scraping results
+scraped_data.json
+browser_history.json
+playwright-log.txt
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# IDEs
+.vscode/
+.idea/
